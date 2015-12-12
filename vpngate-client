@@ -28,6 +28,7 @@ signal.signal(signal.SIGUSR2, lambda a: a)
 
 
 class VPN:
+    """A VPN server."""
     VPN_READY_SIGS = set([signal.SIGUSR1, signal.SIGINT])
 
     def __init__(self, data, args):
@@ -35,7 +36,7 @@ class VPN:
         self.args = args
 
         # Logging
-        self.logger = logging.getLogger("VPN:%s" % data["#HostName"])
+        self.log = logging.getLogger("VPN:%s" % data["#HostName"])
 
         # VPN Information
         self.ip = data["IP"]
@@ -51,36 +52,45 @@ class VPN:
         self.config = base64.b64decode(conf).decode("UTF-8")
         for line in self.config.splitlines():
             if line.startswith("remote"):
+                # format: remote <ip> <port>
                 _, ip, self.port = line.split(" ")
+
+                # If the IP is different, something is not right.
                 assert ip == self.ip
+
             elif line.startswith("proto"):
+                # format: proto tcp|udp
                 _, self.proto = line.split(" ")
 
-        self.logger.debug("New VPN: ip=%s, proto=%s port=%s country=%s (%s)",
-                          self.ip, self.proto, self.port, self.country,
-                          self.country_code)
+        self.log.debug("New VPN: ip=%s, proto=%s port=%s country=%s (%s)",
+                       self.ip, self.proto, self.port, self.country,
+                       self.country_code)
 
     def is_listening(self):
         """Probes the VPN endpoint to see if it's listening."""
         if self.proto == "udp":
             # TODO: Implement udp probing.
-            self.logger.debug("UDP probing not implemented")
+            self.log.debug("Can't probe UDP servers")
             return True
 
-        self.logger.debug("Probing VPN endpoint")
+        self.log.debug("Probing VPN endpoint")
+
+        # Create a socket with a timeout.
         s = socket.socket()
         s.settimeout(self.args.probe_timeout / 1000)
+
         try:
             # Try to connect to the VPN endpoint.
             s.connect((self.ip, int(self.port)))
-            self.logger.debug("VPN endpoint is listening")
-            return True
         except socket.timeout:
-            self.logger.debug("VPN endpoint did not respond to connection")
+            self.log.debug("VPN endpoint did not respond to connection")
             return False
         finally:
             s.shutdown(socket.SHUT_RDWR)
             s.close()
+
+        self.log.debug("VPN endpoint is listening")
+        return True
 
     def connect(self):
         """Initiates and manages the connection to this VPN server.
@@ -93,9 +103,9 @@ class VPN:
             (KeyboardInterrupt) if the process was aborted by the user.
         """
 
-        self.logger.info("Connecting to VPN...")
+        self.log.info("Connecting to VPN...")
         with tempfile.NamedTemporaryFile(mode="w") as conf:
-            self.logger.debug("Writing config to %s", conf.name)
+            self.log.debug("Writing config to %s", conf.name)
             conf.write(self.config)
 
             cmd = self.build_ovpn_command(conf.name)
@@ -103,8 +113,9 @@ class VPN:
             # If not verbose, send the output to /dev/null
             vpn_stdout = None if self.args.verbose else subprocess.DEVNULL
 
-            self.logger.debug("Executing %s", cmd)
-            with subprocess.Popen(cmd, stdout=vpn_stdout,  start_new_session=True) as proc:
+            self.log.debug("Executing %s", cmd)
+            with subprocess.Popen(cmd, stdout=vpn_stdout,
+                                  start_new_session=True) as proc:
                 # Wait for the VPN to initialize
                 if not self.wait_for_vpn_ready(proc):
                     # VPN failed to initialize. Indicate the caller to try the
@@ -114,25 +125,30 @@ class VPN:
                 # Perform a speedtest on the VPN
                 self.speedtest()
 
-                self.logger.info("Would you like to use this VPN (Enter uses," +
-                                 " CTRL+C chooses the next one)?")
-
-                try:
-                    input()
-                except KeyboardInterrupt:
-                    # The user did not want this VPN
-                    print("Choosing the next VPN")
+                # Ask the user if she wishes to use this VPN.
+                if not self.prompt_use_vpn():
                     self.terminate_vpn(proc)
                     return False
 
-                self.logger.info("Setup finished! Press CTRL+C to stop the VPN")
+                self.log.info("Setup finished! Press CTRL+C to stop the VPN")
 
+                # Wait for SIGINT indefinitely.
                 signal.sigwait(set([signal.SIGINT]))
 
-                self.logger.info("Closing VPN connection.")
+                self.log.info("Closing VPN connection.")
                 self.terminate_vpn(proc)
 
             return True
+
+    def build_ovpn_command(self, conffile):
+        """Builds the openvpn command to connect to this VPN."""
+        # Make openvpn send USR1 on VPN up and USR2 on VPN down
+        pid = os.getpid()
+        up = "/bin/kill -USR1 %i" % pid
+        return ["openvpn",
+                "--script-security", "2",
+                "--route-up", up,
+                "--config", conffile]
 
     def wait_for_vpn_ready(self, proc):
         """Waits until the VPN routes have been correctly set and the VPN is
@@ -153,12 +169,12 @@ class VPN:
         # process would hang indefinitely if SIGINT is generated.
         sig = signal.sigtimedwait(VPN.VPN_READY_SIGS, self.args.vpn_timeout)
         if not sig:
-            self.logger.warning("VPN Initialization timed out.")
+            self.log.warning("VPN Initialization timed out.")
             self.terminate_vpn(proc)
             return False
 
         elif sig.si_signo == signal.SIGINT:
-            self.logger.info("Received SIGINT. Cleaning up...")
+            self.log.info("Received SIGINT. Cleaning up...")
             self.terminate_vpn(proc)
 
             # sigtimedwait supressed the interrupt; raise it to let the rest
@@ -170,9 +186,27 @@ class VPN:
             assert sig.si_signo == signal.SIGUSR1
 
             # Got USR1 which marks that the VPN routes are up.
-            self.logger.info("VPN initialized!")
+            self.log.info("VPN initialized!")
 
             return True
+
+    def prompt_use_vpn(self):
+        """Asks the user if she likes to continue using the VPN connection
+           after speedtest.
+
+            Returns:
+                (boolean) True if the users wants to use this VPN, False if not
+
+        """
+
+        self.log.info("Would you like to use this VPN (No = CTRL+C, " +
+                      "Yes = Any Key)?")
+        try:
+            input()
+        except KeyboardInterrupt:
+            return False
+
+        return True
 
     def terminate_vpn(self, proc):
         """Terminates the given vpn process gracefully (or forcefully if the
@@ -190,39 +224,34 @@ class VPN:
 
             return True
 
-        self.logger.info("Terminating VPN connection")
+        self.log.info("Terminating VPN connection")
         proc.terminate()
         if not terminated():
             self.warning("Termination timed out. Killing the process.")
             proc.kill()
             if not terminated():
-                self.logger.critical("The VPN process can't be killed!")
-                self.logger.critical("Exiting...")
+                self.log.critical("The VPN process can't be killed!")
+                self.log.critical("Exiting...")
                 sys.exit(1)
 
     def speedtest(self):
         """Performs a speed test on the VPN connection."""
 
-        self.logger.info("Performing connection speed test")
-        self.logger.info("Press CTRL+C to stop the speed test.")
+        self.log.info("Performing connection speed test")
+        self.log.info("Press CTRL+C to stop the speed test.")
 
         try:
             speedtest()
         except KeyboardInterrupt:
             print("")
 
-    def build_ovpn_command(self, conffile):
-        """Builds the openvpn command to connect to this VPN."""
-        # Make openvpn send USR1 on VPN up and USR2 on VPN down
-        pid = os.getpid()
-        up = "/bin/kill -USR1 %i" % pid
-        return ["openvpn", "--script-security", "2", "--route-up", up, "--config", conffile]
-
     def __str__(self):
         return "VPN(ip=%s, country=%s)" % (self.ip, self.country)
 
+
 def speedtest():
-    """Performs a speedtest printing connection speeds in kb/s once every 500ms.
+    """Performs a speedtest printing connection speeds in kb/s once every
+       500ms.
     """
     req = urllib.request.urlopen(SPEED_TEST_URL)
 
@@ -268,7 +297,7 @@ def parse_args():
     p.add_argument("--verbose", "-v", action="store_true", default=False,
                    help="More verbose output")
     p.add_argument("--vpn-timeout", "-t", action="store", default=10, type=int,
-                   help="Time to wait for a VPN connection to be established " +
+                   help="Time to wait for a VPN to be established " +
                         "before giving up (seconds).")
     return p.parse_args()
 
@@ -279,7 +308,7 @@ def load_vpns(args):
     data = io.TextIOWrapper(req, encoding='utf8')
 
     # The first line is garbage, the second line contains the header.
-    rows = itertools.islice(data, 1, 20)
+    rows = itertools.islice(data, 1, None)
 
     # Parse the CSV
     reader = csv.DictReader(rows)
@@ -294,14 +323,19 @@ def load_vpns(args):
 def get_responding_vpns(vpns, args):
     logger.info("Pinging VPN services")
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.probes) as ex:
+        # Parallelize the probing to a thread pool
         futures = {ex.submit(vpn.is_listening): vpn for vpn in vpns}
         responding = []
+
         for future in concurrent.futures.as_completed(futures):
             vpn = futures[future]
+
             try:
+                # True if the VPN responded, False otherwise
                 if future.result():
                     responding.append(vpn)
-            except Exception as e:
+
+            except:
                 logger.exception("Ping failed")
 
     logger.info("Found %i responding VPNs", len(responding))
@@ -316,9 +350,15 @@ if __name__ == "__main__":
     else:
         logging.basicConfig(level=logging.INFO)
 
+    # Load VPN server list.
     vpns = load_vpns(args)
+
+    # Filter out unresponsive VPNs
     responding_vpns = get_responding_vpns(vpns, args)
+
+    # Connect to them one-by-one and let the user decide which one to use.
     for vpn in responding_vpns:
+        logging.info("Connecting to %s", vpn)
         try:
             res = vpn.connect()
         except KeyboardInterrupt:
