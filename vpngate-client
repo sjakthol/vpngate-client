@@ -12,10 +12,12 @@ import signal
 import socket
 import subprocess
 import tempfile
+import time
 import urllib.request
 
 # The URL for the VPN list
 VPN_LIST_URL = "http://www.vpngate.net/api/iphone/"
+SPEED_TEST_URL = "https://cachefly.cachefly.net/10mb.test"
 
 logger = logging.getLogger()
 
@@ -102,17 +104,32 @@ class VPN:
             vpn_stdout = None if self.args.verbose else subprocess.DEVNULL
 
             self.logger.debug("Executing %s", cmd)
-            with subprocess.Popen(cmd, stdout=vpn_stdout) as proc:
+            with subprocess.Popen(cmd, stdout=vpn_stdout,  start_new_session=True) as proc:
                 # Wait for the VPN to initialize
                 if not self.wait_for_vpn_ready(proc):
                     # VPN failed to initialize. Indicate the caller to try the
                     # next one.
                     return False
 
-                self.logger.info("Press CTRL+C to terminate the VPN connection.")
+                # Perform a speedtest on the VPN
+                self.speedtest()
+
+                self.logger.info("Would you like to use this VPN (Enter uses," +
+                                 " CTRL+C chooses the next one)?")
+
+                try:
+                    input()
+                except KeyboardInterrupt:
+                    # The user did not want this VPN
+                    print("Choosing the next VPN")
+                    self.terminate_vpn(proc)
+                    return False
+
+                self.logger.info("Setup finished! Press CTRL+C to stop the VPN")
+
                 signal.sigwait(set([signal.SIGINT]))
 
-                self.logger.info("Received SIGINT. Closing VPN connection.")
+                self.logger.info("Closing VPN connection.")
                 self.terminate_vpn(proc)
 
             return True
@@ -183,6 +200,17 @@ class VPN:
                 self.logger.critical("Exiting...")
                 sys.exit(1)
 
+    def speedtest(self):
+        """Performs a speed test on the VPN connection."""
+
+        self.logger.info("Performing connection speed test")
+        self.logger.info("Press CTRL+C to stop the speed test.")
+
+        try:
+            speedtest()
+        except KeyboardInterrupt:
+            print("")
+
     def build_ovpn_command(self, conffile):
         """Builds the openvpn command to connect to this VPN."""
         # Make openvpn send USR1 on VPN up and USR2 on VPN down
@@ -192,6 +220,37 @@ class VPN:
 
     def __str__(self):
         return "VPN(ip=%s, country=%s)" % (self.ip, self.country)
+
+def speedtest():
+    """Performs a speedtest printing connection speeds in kb/s once every 500ms.
+    """
+    req = urllib.request.urlopen(SPEED_TEST_URL)
+
+    # Bytes since previous checkpoint
+    bytes_read = 0
+
+    # Previous moment the speed was calculated (seconds)
+    prev_checkpoint = time.perf_counter()
+
+    # Size of the chunks to read.
+    chunk = 4096
+    while 1:
+        # Read the next chunk
+        data = req.read(chunk)
+        bytes_read += chunk
+
+        if not data:
+            break
+
+        # See how long since last checkpoint
+        delta_t = time.perf_counter() - prev_checkpoint
+
+        if delta_t > 0.5:
+            # Yield the current speed.
+            kbps = bytes_read / delta_t / 1024
+            print("Current Speed: % 5.1f kb/s" % kbps, end="\r")
+            bytes_read = 0
+            prev_checkpoint = time.perf_counter()
 
 
 def parse_args():
@@ -220,7 +279,7 @@ def load_vpns(args):
     data = io.TextIOWrapper(req, encoding='utf8')
 
     # The first line is garbage, the second line contains the header.
-    rows = itertools.islice(data, 1, 3)
+    rows = itertools.islice(data, 1, 20)
 
     # Parse the CSV
     reader = csv.DictReader(rows)
@@ -259,10 +318,14 @@ if __name__ == "__main__":
 
     vpns = load_vpns(args)
     responding_vpns = get_responding_vpns(vpns, args)
-    for vpn in vpns:
+    for vpn in responding_vpns:
         try:
-            vpn.connect()
+            res = vpn.connect()
         except KeyboardInterrupt:
-            logger.warning("Interrupted. Exiting.")
             break
-        break
+
+        # The user was happy with this VPN, break the loop.
+        if res:
+            break
+
+    logger.info("Exiting...")
