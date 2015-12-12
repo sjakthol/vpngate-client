@@ -381,7 +381,7 @@ def parse_args():
                         "which to look for a VPN.")
     p.add_argument("--probes", "-n", action="store", default=100, type=int,
                    help="Number of concurrent connection probes to send.")
-    p.add_argument("--probe-timeout", "-p", action="store", default=1000,
+    p.add_argument("--probe-timeout", "-p", action="store", default=1500,
                    type=int,
                    help="When probing, how long to wait for " +
                         "connection until marking the VPN as unavailable " +
