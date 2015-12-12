@@ -5,12 +5,12 @@ import base64
 import concurrent.futures
 import csv
 import io
-import itertools
 import logging
 import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -24,12 +24,16 @@ logger = logging.getLogger()
 # sigwait() does not work unless the signals waited have a handler defined
 # (default handler terminates the program).
 signal.signal(signal.SIGUSR1, lambda a: a)
-signal.signal(signal.SIGUSR2, lambda a: a)
+
+
+EU_COUNTRIES = ["AL", "AT", "BA", "BE", "BG", "CH", "CY", "DE", "DK", "EE",
+                "ES", "FI", "FR", "GB", "GR", "HR", "HU", "IE", "IS", "IT",
+                "LT", "LV", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS",
+                "SE", "SI"]
 
 
 class VPN:
     """A VPN server."""
-    VPN_READY_SIGS = set([signal.SIGUSR1, signal.SIGINT])
 
     def __init__(self, data, args):
         # Command Line Arguments
@@ -167,7 +171,8 @@ class VPN:
 
         # Wait for SIGUSR1 and SIGINT; if we did not wait for SIGINT, this
         # process would hang indefinitely if SIGINT is generated.
-        sig = signal.sigtimedwait(VPN.VPN_READY_SIGS, self.args.vpn_timeout)
+        sigs = set([signal.SIGUSR1, signal.SIGINT])
+        sig = signal.sigtimedwait(sigs, self.args.vpn_timeout)
         if not sig:
             self.log.warning("VPN Initialization timed out.")
             self.terminate_vpn(proc)
@@ -177,7 +182,7 @@ class VPN:
             self.log.info("Received SIGINT. Cleaning up...")
             self.terminate_vpn(proc)
 
-            # sigtimedwait supressed the interrupt; raise it to let the rest
+            # sigtimedwait() supressed the interrupt; raise it to let the rest
             # of the program know the user wants out.
             raise KeyboardInterrupt
 
@@ -237,9 +242,8 @@ class VPN:
     def speedtest(self):
         """Performs a speed test on the VPN connection."""
 
-        self.log.info("Performing connection speed test")
-        self.log.info("Press CTRL+C to stop the speed test.")
-
+        self.log.info("Performing connection speed test. Press CTRL+C to " +
+                      "stop it.")
         try:
             speedtest()
         except KeyboardInterrupt:
@@ -247,6 +251,93 @@ class VPN:
 
     def __str__(self):
         return "VPN(ip=%s, country=%s)" % (self.ip, self.country)
+
+
+class VPNList:
+    def __init__(self, args):
+        self.args = args
+
+        # Setup logging
+        self.log = logging.getLogger("VPNList")
+
+        # Fetch the list
+        self.load_vpns()
+
+        # Filter by country
+        self.filter_by_country()
+
+        # Filter out unresponsive servers
+        self.filter_unresponsive_vpns()
+
+    def load_vpns(self):
+        """Loads the VPN list from vpngate.net and parses then to |self.vpns|.
+        """
+        self.log.info("Loading VPN list from %s", self.args.url)
+
+        # Read the data
+        req = urllib.request.urlopen(self.args.url)
+        data = io.TextIOWrapper(req, encoding='utf8')
+
+        # The first and last lines start with an asterix; ignore them
+        rows = filter(lambda r: not r.startswith("*"), data)
+
+        # Parse the CSV
+        reader = csv.DictReader(rows)
+
+        # Create VPN instances
+        self.vpns = [VPN(row, self.args) for row in reader]
+        self.log.info("Found %i VPN servers", len(self.vpns))
+
+    def filter_by_country(self):
+        """Filters the VPN list based on geographic information."""
+        # Check if anything needs to be filtered
+
+        filter_fn = None
+
+        if self.args.eu:
+            self.log.info("Filtering out non-Europe VPNs")
+            filter_fn = lambda vpn: vpn.country_code in EU_COUNTRIES
+
+        if self.args.us:
+            self.log.info("Filtering out non-US VPNs")
+            filter_fn = lambda vpn: vpn.country_code == "US"
+
+        if self.args.country:
+            country = self.args.country.upper()
+            self.log.info("Filtering out non-%s VPNs", country)
+            filter_fn = lambda vpn: vpn.country_code == country
+
+        if filter_fn:
+            self.vpns = list(filter(filter_fn, self.vpns))
+
+    def filter_unresponsive_vpns(self):
+        """Probes VPN servers listening on TCP ports and removes those who do
+           not reply in timely manner from the list of available VPNs.
+        """
+        self.log.info("Filtering out unresponsive VPN servers")
+
+        # The number of concurrent probes
+        n = args.probes
+
+        # Parallelize the probing to a thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
+            futures = {ex.submit(vpn.is_listening): vpn for vpn in self.vpns}
+            responding = []
+
+            for future in concurrent.futures.as_completed(futures):
+                vpn = futures[future]
+
+                try:
+                    # True if the VPN responded, False otherwise
+                    if future.result():
+                        responding.append(vpn)
+
+                except:
+                    self.log.exception("Availability probe failed")
+
+        self.log.info("Found %i responding VPNs", len(responding))
+
+        self.vpns = responding
 
 
 def speedtest():
@@ -285,6 +376,9 @@ def speedtest():
 def parse_args():
     """Parses the command line arguments."""
     p = argparse.ArgumentParser(description="Client for vpngate.net VPNs")
+    p.add_argument("--country", "-c", action="store",
+                   help="A 2 char country code (e.g. CA for Canada) from " +
+                        "which to look for a VPN.")
     p.add_argument("--probes", "-n", action="store", default=100, type=int,
                    help="Number of concurrent connection probes to send.")
     p.add_argument("--probe-timeout", "-p", action="store", default=1000,
@@ -292,9 +386,14 @@ def parse_args():
                    help="When probing, how long to wait for " +
                         "connection until marking the VPN as unavailable " +
                         "(milliseconds)")
+    p.add_argument("--eu", "-e", action="store_true",
+                   help="Only consider servers in Europe")
+    p.add_argument("--us", "-a", action="store_true",
+                   help="Only consider servers in United States. Shorthand " +
+                        "for --country US")
     p.add_argument("--url", "-u", action="store", default=VPN_LIST_URL,
                    help="URL of the VPN list (csv)")
-    p.add_argument("--verbose", "-v", action="store_true", default=False,
+    p.add_argument("--verbose", "-v", action="store_true",
                    help="More verbose output")
     p.add_argument("--vpn-timeout", "-t", action="store", default=10, type=int,
                    help="Time to wait for a VPN to be established " +
@@ -302,62 +401,12 @@ def parse_args():
     return p.parse_args()
 
 
-def load_vpns(args):
-    logger.info("Loading VPN list from %s", args.url)
-    req = urllib.request.urlopen(args.url)
-    data = io.TextIOWrapper(req, encoding='utf8')
-
-    # The first line is garbage, the second line contains the header.
-    rows = itertools.islice(data, 1, None)
-
-    # Parse the CSV
-    reader = csv.DictReader(rows)
-
-    # Create VPN instances; the last line only contains "*" which is ignored
-    vpns = [VPN(row, args) for row in reader if row["#HostName"] != "*"]
-
-    logger.info("Found %i VPN servers", len(vpns))
-    return vpns
-
-
-def get_responding_vpns(vpns, args):
-    logger.info("Pinging VPN services")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.probes) as ex:
-        # Parallelize the probing to a thread pool
-        futures = {ex.submit(vpn.is_listening): vpn for vpn in vpns}
-        responding = []
-
-        for future in concurrent.futures.as_completed(futures):
-            vpn = futures[future]
-
-            try:
-                # True if the VPN responded, False otherwise
-                if future.result():
-                    responding.append(vpn)
-
-            except:
-                logger.exception("Ping failed")
-
-    logger.info("Found %i responding VPNs", len(responding))
-
-    return responding
-
-if __name__ == "__main__":
-    args = parse_args()
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
-
+def main(args):
     # Load VPN server list.
-    vpns = load_vpns(args)
-
-    # Filter out unresponsive VPNs
-    responding_vpns = get_responding_vpns(vpns, args)
+    vpnlist = VPNList(args)
 
     # Connect to them one-by-one and let the user decide which one to use.
-    for vpn in responding_vpns:
+    for vpn in vpnlist.vpns:
         logging.info("Connecting to %s", vpn)
         try:
             res = vpn.connect()
@@ -369,3 +418,18 @@ if __name__ == "__main__":
             break
 
     logger.info("Exiting...")
+    return 0
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    if args.eu and args.us and args.country:
+        logging.error("Only one of --eu, --us, --country can be specified")
+        sys.exit(1)
+
+    sys.exit(main(args))
