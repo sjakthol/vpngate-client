@@ -383,24 +383,23 @@ def parse_args():
                    help="A 2 char country code (e.g. CA for Canada) from " +
                         "which to look for a VPNs. If specified multiple " +
                         "times, VPNs from all the countries will be selected.")
-    p.add_argument("--probes", "-n", action="store", default=100, type=int,
+    p.add_argument("--eu", action="store_true",
+                   help="Adds European countries to the list of considerable" +
+                        " countries")
+    p.add_argument("--probes", action="store", default=100, type=int,
                    help="Number of concurrent connection probes to send.")
-    p.add_argument("--probe-timeout", "-p", action="store", default=1500,
-                   type=int,
+    p.add_argument("--probe-timeout", action="store", default=1500, type=int,
                    help="When probing, how long to wait for " +
                         "connection until marking the VPN as unavailable " +
                         "(milliseconds)")
-    p.add_argument("--eu", "-e", action="store_true",
-                   help="Adds European countries to the list of considerable" +
-                        " countries")
-    p.add_argument("--us", "-a", action="store_true",
+    p.add_argument("--url", action="store", default=VPN_LIST_URL,
+                   help="URL of the VPN list (csv)")
+    p.add_argument("--us", action="store_true",
                    help="Adds United States to the list of possible " +
                         "countries. Shorthand or --country US")
-    p.add_argument("--url", "-u", action="store", default=VPN_LIST_URL,
-                   help="URL of the VPN list (csv)")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="More verbose output")
-    p.add_argument("--vpn-timeout", "-t", action="store", default=10, type=int,
+    p.add_argument("--vpn-timeout", action="store", default=10, type=int,
                    help="Time to wait for a VPN to be established " +
                         "before giving up (seconds).")
     return p.parse_args()
