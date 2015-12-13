@@ -31,6 +31,76 @@ EU_COUNTRIES = ["AL", "AT", "BA", "BE", "BG", "CH", "CY", "DE", "DK", "EE",
                 "LT", "LV", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS",
                 "SE", "SI"]
 
+# Commands for guarding IPv4 traffic against non-VPN leakage
+IPv4_COMMANDS = [
+    # accept connections to loopback device
+    ["iptables", "--append", "INPUT",
+                 "--in-interface", "lo",
+                 "--jump", "ACCEPT"],
+
+    # accept connections from loopback device
+    ["iptables", "--append", "OUTPUT",
+                 "--out-interface", "lo",
+                 "--jump", "ACCEPT"],
+
+    # allow outbound broadcasts for dhcp traffic
+    ["iptables", "--append", "OUTPUT",
+                 "--destination", "255.255.255.255",
+                 "--jump", "ACCEPT"],
+
+    # allow inbound broadcasts for dhcp traffic
+    ["iptables", "--append", "INPUT",
+                 "--source", "255.255.255.255",
+                 "--jump", "ACCEPT"],
+
+    # allow inbound traffic from local network
+    ["iptables", "--append", "INPUT",
+                 "--source", "192.168.0.0/16",
+                 "--destination", "192.168.0.0/16",
+                 "--jump", "ACCEPT"],
+
+    # allow outbound traffic to local network
+    ["iptables", "--append", "OUTPUT",
+                 "--source", "192.168.0.0/16",
+                 "--destination", "192.168.0.0/16",
+                 "--jump", "ACCEPT"],
+
+    # allow packets to be forwarded from tun0 to other interfaces
+    ["iptables", "--append", "FORWARD",
+                 "--out-interface", "tun+",
+                 "--jump", "ACCEPT"],
+
+    # allow packets to be forwarded from any interface to tun0
+    ["iptables", "--append", "FORWARD",
+                 "--in-interface", "tun+",
+                 "--jump", "ACCEPT"],
+
+    # handle nated packets correctly
+    ["iptables", "--table", "nat",
+                 "--append", "POSTROUTING",
+                 "--out-interface", "tun+",
+                 "--jump", "MASQUERADE"],
+
+    # drop packets not going to the VPN IP
+    ["iptables", "--append", "OUTPUT",
+                 "!", "--out-interface", "tun+",
+                 "!", "--destination", "<IP>",
+                 "--jump", "DROP"],
+]
+
+# Commands for blocking all ipv6 traffic; the VPNs don't support the
+# protocol.
+IPv6_COMMANDS = [
+    # drop inbound ipv6 packets
+    ["ip6tables", "-P", "INPUT", "DROP"],
+
+    # drop outbound ipv6 packets
+    ["ip6tables", "-P", "OUTPUT", "DROP"],
+
+    # drop forwarded ipv6 packets
+    ["ip6tables", "-P", "FORWARD", "DROP"],
+]
+
 
 class VPN:
     """A VPN server."""
@@ -136,9 +206,14 @@ class VPN:
 
                 self.log.info("Setup finished! Press CTRL+C to stop the VPN")
 
+                if self.args.iptables:
+                    self.setup_iptables_rules()
+
                 # Wait for SIGINT indefinitely.
                 signal.sigwait(set([signal.SIGINT]))
 
+                if self.args.iptables:
+                    self.clear_iptables_rules()
                 self.log.info("Closing VPN connection.")
                 self.terminate_vpn(proc)
 
@@ -249,8 +324,67 @@ class VPN:
         except KeyboardInterrupt:
             print("")
 
+    def setup_iptables_rules(self):
+        """Sets up iptables rules for blocking traffic that's not going
+        through the VPN. Useful to stop traffic leaking if the VPN disconnects
+        for some reason.
+        """
+
+        self.log.info("Setting iptables rules to block non-VPN traffic")
+
+        for cmd in IPv4_COMMANDS + IPv6_COMMANDS:
+            if "<IP>" in cmd:
+                cmd[cmd.index("<IP>")] = self.ip
+
+            if not check_call_infallible(cmd):
+                self.logging.exception("Failed to setup iptables; rolling " +
+                                       "back changes")
+                self.clear_iptables_rules()
+                return
+
+    def clear_iptables_rules(self):
+        """Clears iptables rules set by the setup_iptables_rules method."""
+
+        self.log.info("Clearing iptables rules")
+
+        # list() so that we don't modify the original list
+        for cmd in list(IPv4_COMMANDS):
+            # Replace the --append with --delete in the setup commands
+            cmd[cmd.index("--append")] = "--delete"
+            if "<IP>" in cmd:
+                cmd[cmd.index("<IP>")] = self.ip
+
+            if not check_call_infallible(cmd):
+                self.logging.exception("Failed to call iptables; continuing " +
+                                       "cleanup anyway")
+
+        for cmd in list(IPv6_COMMANDS):
+            # Replace DROP with ACCEPT to reverse the original action
+            cmd[cmd.index("DROP")] = "ACCEPT"
+
+            if not check_call_infallible(cmd):
+                self.logging.exception("Failed to call ip6tables; continuing" +
+                                       " cleanup anyway")
+
     def __str__(self):
         return "VPN(ip=%s, country=%s)" % (self.ip, self.country)
+
+
+def check_call_infallible(cmd):
+    """Calls subprocess.check_call() and returns False if the process exits
+       with non-zero exit code instead of throwing CalledProcessException
+
+       Arguments:
+           (Array) cmd - The command to execute.
+
+       Returns:
+           (boolean) True if command succeeded, False otherwise.
+    """
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessException:
+        return False
+    return True
 
 
 class VPNList:
@@ -386,6 +520,9 @@ def parse_args():
     p.add_argument("--eu", action="store_true",
                    help="Adds European countries to the list of considerable" +
                         " countries")
+    p.add_argument("--iptables", "-i", action="store_true",
+                   help="Set iptables rules that block non-VPN traffic. " +
+                        "WARNING: This option messes IPv6 iptables up!")
     p.add_argument("--probes", action="store", default=100, type=int,
                    help="Number of concurrent connection probes to send.")
     p.add_argument("--probe-timeout", action="store", default=1500, type=int,
