@@ -292,23 +292,26 @@ class VPNList:
         """Filters the VPN list based on geographic information."""
         # Check if anything needs to be filtered
 
-        filter_fn = None
+        filters = []
 
         if self.args.eu:
-            self.log.info("Filtering out non-Europe VPNs")
-            filter_fn = lambda vpn: vpn.country_code in EU_COUNTRIES
+            self.log.info("Including VPNs in Europe")
+            filters.append(lambda vpn: vpn.country_code in EU_COUNTRIES)
 
         if self.args.us:
-            self.log.info("Filtering out non-US VPNs")
-            filter_fn = lambda vpn: vpn.country_code == "US"
+            self.log.info("Including VPNs in USA")
+            filters.append(lambda vpn: vpn.country_code == "US")
 
         if self.args.country:
-            country = self.args.country.upper()
-            self.log.info("Filtering out non-%s VPNs", country)
-            filter_fn = lambda vpn: vpn.country_code == country
+            countries = set(map(str.upper, self.args.country))
+            self.log.info("Including VPNs in %s", countries)
+            filters.append(lambda vpn: vpn.country_code in countries)
 
-        if filter_fn:
+        if filters:
+            filter_fn = lambda vpn: any(f(vpn) for f in filters)
             self.vpns = list(filter(filter_fn, self.vpns))
+            self.log.info("Found %i VPN servers matching the geographic " +
+                          "restrictions", len(self.vpns))
 
     def filter_unresponsive_vpns(self):
         """Probes VPN servers listening on TCP ports and removes those who do
@@ -376,9 +379,10 @@ def speedtest():
 def parse_args():
     """Parses the command line arguments."""
     p = argparse.ArgumentParser(description="Client for vpngate.net VPNs")
-    p.add_argument("--country", "-c", action="store",
+    p.add_argument("--country", "-c", action="append",
                    help="A 2 char country code (e.g. CA for Canada) from " +
-                        "which to look for a VPN.")
+                        "which to look for a VPNs. If specified multiple " +
+                        "times, VPNs from all the countries will be selected.")
     p.add_argument("--probes", "-n", action="store", default=100, type=int,
                    help="Number of concurrent connection probes to send.")
     p.add_argument("--probe-timeout", "-p", action="store", default=1500,
@@ -387,10 +391,11 @@ def parse_args():
                         "connection until marking the VPN as unavailable " +
                         "(milliseconds)")
     p.add_argument("--eu", "-e", action="store_true",
-                   help="Only consider servers in Europe")
+                   help="Adds European countries to the list of considerable" +
+                        " countries")
     p.add_argument("--us", "-a", action="store_true",
-                   help="Only consider servers in United States. Shorthand " +
-                        "for --country US")
+                   help="Adds United States to the list of possible " +
+                        "countries. Shorthand or --country US")
     p.add_argument("--url", "-u", action="store", default=VPN_LIST_URL,
                    help="URL of the VPN list (csv)")
     p.add_argument("--verbose", "-v", action="store_true",
@@ -427,9 +432,5 @@ if __name__ == "__main__":
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO)
-
-    if args.eu and args.us and args.country:
-        logging.error("Only one of --eu, --us, --country can be specified")
-        sys.exit(1)
 
     sys.exit(main(args))
