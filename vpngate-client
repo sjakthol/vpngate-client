@@ -548,7 +548,7 @@ def main(args):
 
     # Connect to them one-by-one and let the user decide which one to use.
     for vpn in vpnlist.vpns:
-        logging.info("Connecting to %s", vpn)
+        logging.info("Connecting to %s (%s)", vpn, vpn.country)
         try:
             res = vpn.connect()
         except KeyboardInterrupt:
