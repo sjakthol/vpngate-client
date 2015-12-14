@@ -184,12 +184,8 @@ class VPN:
 
             cmd = self.build_ovpn_command(conf.name)
 
-            # If not verbose, send the output to /dev/null
-            vpn_stdout = None if self.args.verbose else subprocess.DEVNULL
-
             self.log.debug("Executing %s", cmd)
-            with subprocess.Popen(cmd, stdout=vpn_stdout,
-                                  start_new_session=True) as proc:
+            with subprocess.Popen(cmd, start_new_session=True) as proc:
                 # Wait for the VPN to initialize
                 if not self.wait_for_vpn_ready(proc):
                     # VPN failed to initialize. Indicate the caller to try the
