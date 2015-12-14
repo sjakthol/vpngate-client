@@ -223,6 +223,8 @@ class VPN:
         return ["openvpn",
                 "--script-security", "2",
                 "--route-up", up,
+                "--up", "/etc/openvpn/update-resolv-conf",
+                "--down", "/etc/openvpn/update-resolv-conf",
                 "--config", conffile]
 
     def wait_for_vpn_ready(self, proc):
