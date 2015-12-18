@@ -156,12 +156,11 @@ class VPN:
         try:
             # Try to connect to the VPN endpoint.
             s.connect((self.ip, int(self.port)))
+            s.shutdown(socket.SHUT_RDWR)
+            s.close()
         except socket.timeout:
             self.log.debug("VPN endpoint did not respond to connection")
             return False
-        finally:
-            s.shutdown(socket.SHUT_RDWR)
-            s.close()
 
         self.log.debug("VPN endpoint is listening")
         return True
