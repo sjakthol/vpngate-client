@@ -1,0 +1,17 @@
+Source: vpngate-client
+Section: net
+Priority: optional
+Maintainer: Sami Jaktholm <sjakthol@outlook.com>
+Build-Depends: debhelper (>= 9),
+               python3-all,
+               python3-setuptools,
+Standards-Version: 3.9.5
+X-Python3-Version: >= 3.3
+
+Package: vpngate-client
+Section: python
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends},
+         openvpn (>= 2.3.2)
+Description: client for vpngate.net VPNs
+ A client for discovering and connecting to vpngate.net OpenVPN servers.
