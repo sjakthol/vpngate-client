@@ -164,6 +164,9 @@ class VPN:
         except socket.timeout:
             self.log.debug("VPN endpoint did not respond to connection")
             return False
+        except (ConnectionRefusedError, OSError):
+            self.log.debug("Connection failed")
+            return False
 
         self.log.debug("VPN endpoint is listening")
         return True
