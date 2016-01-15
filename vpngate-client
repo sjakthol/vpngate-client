@@ -130,7 +130,10 @@ class VPN:
                 _, ip, self.port = line.split(" ")
 
                 # If the IP is different, something is not right.
-                assert ip == self.ip
+                assert not self.ip or ip == self.ip
+
+                # If the IP was not provided, use this one found here.
+                self.ip = ip
 
             elif line.startswith("proto"):
                 # format: proto tcp|udp
@@ -367,6 +370,24 @@ class VPN:
         return "VPN(ip=%s, country=%s)" % (self.ip, self.country)
 
 
+class FileVPN(VPN):
+    """A VPN whose config is read directly from an .openvpn file"""
+
+    def __init__(self, args):
+        conf = args.ovpnfile.read()
+        b64conf = base64.b64encode(conf)
+
+        data = {
+            "IP": None,
+            "CountryLong": "Unknown",
+            "CountryShort": "Unknown",
+            "#HostName": args.ovpnfile.name,
+            "OpenVPN_ConfigData_Base64": b64conf
+        }
+
+        super().__init__(data, args)
+
+
 def check_call_infallible(cmd):
     """Calls subprocess.check_call() and returns False if the process exits
        with non-zero exit code instead of throwing CalledProcessException
@@ -536,11 +557,25 @@ def parse_args():
     p.add_argument("--vpn-timeout", action="store", default=10, type=int,
                    help="Time to wait for a VPN to be established " +
                         "before giving up (seconds).")
+    p.add_argument("ovpnfile", type=argparse.FileType('rb'), default=None,
+                   nargs="?",
+                   help="Connects to the OpenVPN VPN whose configuration is " +
+                        "in the provided .ovpn file")
     return p.parse_args()
 
 
-def main(args):
-    # Load VPN server list.
+def single_vpn_main(args):
+    """Connects to the VPN is the given .ovpn file."""
+    vpn = FileVPN(args)
+    try:
+        vpn.connect()
+    except KeyboardInterrupt:
+        logging.error("Aborted")
+
+
+def vpn_list_main(args):
+    """Fetches list of VPNs and connects to them."""
+
     vpnlist = VPNList(args)
 
     # Connect to them one-by-one and let the user decide which one to use.
@@ -556,7 +591,15 @@ def main(args):
             break
 
     logger.info("Exiting...")
-    return 0
+
+
+def main(args):
+    if args.ovpnfile:
+        # Load a single VPN from the given file.
+        return single_vpn_main(args)
+    else:
+        # Load list and try them in order
+        return vpn_list_main(args)
 
 if __name__ == "__main__":
     args = parse_args()
