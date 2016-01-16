@@ -1,3 +1,9 @@
+vpngate-client (0.2) trusty; urgency=medium
+
+  * Connect to a VPN from an .ovpn file.
+
+ -- Sami Jaktholm <sjakthol@outlook.com>  Sat, 16 Jan 2016 08:22:55 +0200
+
 vpngate-client (0.1) trusty; urgency=medium
 
   * Initial release.
