@@ -225,12 +225,23 @@ class VPN:
         # Make openvpn send USR1 on VPN up and USR2 on VPN down
         pid = os.getpid()
         up = "/bin/kill -USR1 %i" % pid
-        return ["openvpn",
-                "--script-security", "2",
-                "--route-up", up,
+
+        command = [
+            "openvpn",
+            "--script-security", "2",
+            "--route-up", up
+        ]
+
+        # Only use 'update-resolv-conf' in '--up' and '--down' if really exists on filesystem.
+        if os.path.isfile("/etc/openvpn/update-resolv-conf"):
+            command.extend([
                 "--up", "/etc/openvpn/update-resolv-conf",
-                "--down", "/etc/openvpn/update-resolv-conf",
-                "--config", conffile]
+                "--down", "/etc/openvpn/update-resolv-conf"
+            ])
+
+        command.extend(["--config", conffile])
+
+        return command
 
     def wait_for_vpn_ready(self, proc):
         """Waits until the VPN routes have been correctly set and the VPN is
