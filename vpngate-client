@@ -261,7 +261,19 @@ class VPN:
         # Wait for SIGUSR1 and SIGINT; if we did not wait for SIGINT, this
         # process would hang indefinitely if SIGINT is generated.
         sigs = set([signal.SIGUSR1, signal.SIGINT])
-        sig = signal.sigtimedwait(sigs, self.args.vpn_timeout)
+
+        sig = None
+        total_wait = 0
+        while not sig and total_wait < self.args.vpn_timeout:
+            # Check if the process died
+            if proc.poll() is not None:
+                # Process is dead. Something went wrong.
+                self.log.warning("VPN initialization failed.")
+                return False
+
+            sig = signal.sigtimedwait(sigs, self.args.vpn_timeout_poll_interval)
+            total_wait += self.args.vpn_timeout_poll_interval
+
         if not sig:
             self.log.warning("VPN Initialization timed out.")
             self.terminate_vpn(proc)
@@ -571,6 +583,8 @@ def parse_args():
     p.add_argument("--vpn-timeout", action="store", default=10, type=int,
                    help="Time to wait for a VPN to be established " +
                         "before giving up (seconds).")
+    p.add_argument("--vpn-timeout-poll-interval", action="store", default=1, type=int,
+                   help="Time between two checks for a potential timeout (seconds)")
     p.add_argument("ovpnfile", type=argparse.FileType('rb'), default=None,
                    nargs="?",
                    help="Connects to the OpenVPN VPN whose configuration is " +
