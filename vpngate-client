@@ -16,7 +16,7 @@ import time
 import urllib.request
 
 # The URL for the VPN list
-VPN_LIST_URL = "http://www.vpngate.net/api/iphone/"
+VPN_LIST_URL = "https://www.vpngate.net/api/iphone/"
 SPEED_TEST_URL = "https://cachefly.cachefly.net/10mb.test"
 
 logger = logging.getLogger()
