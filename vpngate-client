@@ -229,7 +229,8 @@ class VPN:
         command = [
             "openvpn",
             "--script-security", "2",
-            "--route-up", up
+            "--route-up", up,
+            "--data-ciphers", "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-128-CBC"
         ]
 
         # Only use 'update-resolv-conf' in '--up' and '--down' if really exists on filesystem.
